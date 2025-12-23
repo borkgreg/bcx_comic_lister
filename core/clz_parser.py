@@ -11,20 +11,6 @@ from .image_allocator import ComicRecord, normalize_series
 
 REQUIRED_COLUMNS = ["Series", "Issue Nr"]
 
-# Optional CLZ columns we support when present
-OPTIONAL_COLUMNS = [
-    "Variant",
-    "Release Year",
-    "Grade",
-    "Title",
-    "Publisher",
-    "Characters",
-    "Cover Artist",
-    "Value",
-    "Era",
-    "Universe",
-]
-
 _VOL_RE = re.compile(r"\bvol\.?\s*(\d+)\b", flags=re.IGNORECASE)
 _ISSUE_RE = re.compile(r"#?\s*(\d+)\s*([A-Za-z]?)")
 
@@ -40,6 +26,7 @@ def _parse_series_and_volume(series_raw: str) -> Tuple[str, int]:
 
     series_clean = re.sub(r"[,()]*\s*\bvol\.?\s*\d+\b", "", series_raw, flags=re.IGNORECASE).strip()
     series_clean = re.sub(r"\s+", " ", series_clean).strip()
+
     return series_clean, volume
 
 
@@ -56,33 +43,13 @@ def _parse_issue(issue_raw: str) -> Tuple[Optional[int], str]:
     return num, suffix
 
 
-def _safe_cell(row: List[str], col_index: Dict[str, int], col_name: str) -> str:
-    idx = col_index.get(col_name)
-    if idx is None:
+def _get(row: List[str], col_index: Dict[str, int], name: str) -> str:
+    i = col_index.get(name)
+    if i is None:
         return ""
-    if idx < 0 or idx >= len(row):
+    if i >= len(row):
         return ""
-    return (row[idx] or "").strip()
-
-
-def _safe_cell_by_index(row: List[str], header: List[str], idx0: int, expected_name: str) -> str:
-    """
-    Strict index-based read with a safety check: only return if header matches expected_name.
-    This enforces: CLZ column I (index0=8) is Value, etc.
-    """
-    if idx0 < 0 or idx0 >= len(header) or idx0 >= len(row):
-        return ""
-    if (header[idx0] or "").strip() != expected_name:
-        return ""
-    return (row[idx0] or "").strip()
-
-
-@dataclass
-class CLZParseResult:
-    header: List[str]
-    rows: List[List[str]]
-    column_index: Dict[str, int]
-    comics: List[ComicRecord]
+    return (row[i] or "").strip()
 
 
 def load_clz_csv(path: str) -> Tuple[List[ComicRecord], List[str]]:
@@ -102,37 +69,17 @@ def load_clz_csv(path: str) -> Tuple[List[ComicRecord], List[str]]:
             if req not in col_index:
                 raise ValueError(f"CLZ CSV missing required column: {req}")
 
-        rows: List[List[str]] = []
         comics: List[ComicRecord] = []
 
         for row in reader:
             if not any((cell or "").strip() for cell in row):
                 continue
 
-            rows.append(row)
-
-            series_raw = _safe_cell(row, col_index, "Series")
-            issue_raw = _safe_cell(row, col_index, "Issue Nr")
+            series_raw = _get(row, col_index, "Series")
+            issue_raw = _get(row, col_index, "Issue Nr")
 
             series_clean, volume = _parse_series_and_volume(series_raw)
             issue_number, issue_suffix = _parse_issue(issue_raw)
-
-            # Optional fields (by name)
-            variant_val = _safe_cell(row, col_index, "Variant").upper()
-            title_val = _safe_cell(row, col_index, "Title")
-            publisher_val = _safe_cell(row, col_index, "Publisher")
-            characters_val = _safe_cell(row, col_index, "Characters")
-            cover_artist_val = _safe_cell(row, col_index, "Cover Artist")
-            grade_val = _safe_cell(row, col_index, "Grade")
-            release_year_val = _safe_cell(row, col_index, "Release Year")
-            era_val = _safe_cell(row, col_index, "Era")
-            universe_val = _safe_cell(row, col_index, "Universe")
-
-            # Value MUST come from CLZ column I (index0=8) when that column is named "Value"
-            value_val = _safe_cell_by_index(row, header, 8, "Value")
-            if not value_val:
-                # fallback if user exports differ, still safe
-                value_val = _safe_cell(row, col_index, "Value")
 
             if issue_number is None:
                 comics.append(
@@ -143,21 +90,27 @@ def load_clz_csv(path: str) -> Tuple[List[ComicRecord], List[str]]:
                         volume=volume,
                         issue_number=0,
                         issue_suffix="",
-                        raw_title=title_val,
+                        raw_title="",
                         clz_row=row,
                         status="FAILED",
                         failure_reason="UNPARSEABLE_ISSUE",
-                        publisher=publisher_val,
-                        release_year=release_year_val,
-                        grade=grade_val,
-                        characters=characters_val,
-                        cover_artist=cover_artist_val,
-                        value=value_val,
-                        era=era_val,
-                        universe=universe_val,
                     )
                 )
                 continue
+
+            variant_val = _get(row, col_index, "Variant").upper()
+            title_val = _get(row, col_index, "Title")
+
+            # ---- Optional metadata (names based on common CLZ export fields) ----
+            publisher = _get(row, col_index, "Publisher")
+            release_year = _get(row, col_index, "Release Year")
+            publication_year = _get(row, col_index, "Publication Year")  # if it exists
+            grade = _get(row, col_index, "Grade")
+            era = _get(row, col_index, "Era")
+            universe = _get(row, col_index, "Universe")
+            cover_artist = _get(row, col_index, "Cover Artist")
+            characters = _get(row, col_index, "Character") or _get(row, col_index, "Characters")
+            value = _get(row, col_index, "Value")
 
             comics.append(
                 ComicRecord(
@@ -169,14 +122,15 @@ def load_clz_csv(path: str) -> Tuple[List[ComicRecord], List[str]]:
                     issue_suffix=(variant_val or issue_suffix),
                     raw_title=title_val,
                     clz_row=row,
-                    publisher=publisher_val,
-                    release_year=release_year_val,
-                    grade=grade_val,
-                    characters=characters_val,
-                    cover_artist=cover_artist_val,
-                    value=value_val,  # <-- BA StartPrice source
-                    era=era_val,
-                    universe=universe_val,
+                    publisher=publisher,
+                    release_year=release_year,
+                    publication_year=publication_year,
+                    grade=grade,
+                    era=era,
+                    universe=universe,
+                    cover_artist=cover_artist,
+                    characters=characters,
+                    value=value,
                 )
             )
 

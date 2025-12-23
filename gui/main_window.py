@@ -194,6 +194,7 @@ class BCXMainWindow:
 
         btn_row = ttk.Frame(card)
         btn_row.pack(anchor="w", pady=(10, 0))
+
         ttk.Button(btn_row, text="Open CLZ WebView Scraper", command=self._open_clz_scraper).pack(side="left")
         ttk.Button(btn_row, text="Refresh staging stats", command=self._refresh_staging_stats).pack(side="left", padx=10)
         ttk.Button(btn_row, text="Clear Staged", command=self._clear_staged).pack(side="left")
@@ -228,9 +229,18 @@ class BCXMainWindow:
             self._log("Launched CLZ WebView Scraper.")
 
             if proc.stdout:
-                threading.Thread(target=self._stream_pipe_to_log, args=(proc.stdout, "[SCRAPER] "), daemon=True).start()
+                threading.Thread(
+                    target=self._stream_pipe_to_log,
+                    args=(proc.stdout, "[SCRAPER] "),
+                    daemon=True,
+                ).start()
+
             if proc.stderr:
-                threading.Thread(target=self._stream_pipe_to_log, args=(proc.stderr, "[SCRAPER:ERR] "), daemon=True).start()
+                threading.Thread(
+                    target=self._stream_pipe_to_log,
+                    args=(proc.stderr, "[SCRAPER:ERR] "),
+                    daemon=True,
+                ).start()
 
             threading.Thread(target=self._watch_process_exit, args=(proc,), daemon=True).start()
 
@@ -264,10 +274,15 @@ class BCXMainWindow:
         except Exception:
             pass
 
+    # ---------- staging helpers ----------
     def _gather_staging_images(self) -> list[str]:
         if not STAGING_ROOT.exists():
             return []
-        return [str(p) for p in STAGING_ROOT.rglob("*") if p.is_file() and p.suffix.lower() in VALID_EXTS]
+        return [
+            str(p)
+            for p in STAGING_ROOT.rglob("*")
+            if p.is_file() and p.suffix.lower() in VALID_EXTS
+        ]
 
     def _refresh_staging_stats(self):
         img_count = 0
@@ -288,9 +303,12 @@ class BCXMainWindow:
             series_count = len(series_folders)
 
             if series_count > 0:
-                self.lbl_staging_stats.config(text=f"Staged images: {img_count}   •   Series folders: {series_count}")
+                self.lbl_staging_stats.config(
+                    text=f"Staged images: {img_count}   •   Series folders: {series_count}"
+                )
             else:
                 self.lbl_staging_stats.config(text=f"Staged images: {img_count}")
+
         except Exception as e:
             self.lbl_staging_stats.config(text=f"Error reading staging folder: {e}")
 
@@ -422,16 +440,33 @@ class BCXMainWindow:
     # ==========================================================
 
     def _section_urls(self, parent):
-        card = self._card(parent, "4) Hosted image URLs", "Paste hosted image URLs below (one per line). Filenames must follow BCX rules.")
+        card = self._card(
+            parent,
+            "4) Hosted image URLs",
+            "Paste hosted image URLs below (one per line). Filenames must follow BCX rules.",
+        )
+
         self.urls_text = tk.Text(card, height=10, wrap="none")
         self.urls_text.pack(fill="x", expand=False, pady=(10, 0))
 
         btn_row = ttk.Frame(card)
         btn_row.pack(anchor="w", pady=(10, 0))
+
         ttk.Button(btn_row, text="Validate URLs", command=self._process_hosted_urls).pack(side="left")
+        ttk.Button(btn_row, text="Clear URLs", command=self._clear_urls).pack(side="left", padx=10)
 
         self.lbl_url_status = ttk.Label(card, text="Not processed")
         self.lbl_url_status.pack(anchor="w", pady=(8, 0))
+
+    def _clear_urls(self):
+        try:
+            self.urls_text.delete("1.0", "end")
+        except Exception:
+            pass
+        self.hosted_image_urls = []
+        if hasattr(self, "lbl_url_status") and self.lbl_url_status:
+            self.lbl_url_status.config(text="Cleared.")
+        self._log("Hosted URLs cleared.")
 
     def _process_hosted_urls(self):
         from core.image_allocator import parse_image_filename
@@ -481,7 +516,11 @@ class BCXMainWindow:
     # ==========================================================
 
     def _section_export(self, parent):
-        card = self._card(parent, "5) Export eBay CSV", "Generates ebay_ready.csv and failed.csv using CLZ export + hosted URLs.")
+        card = self._card(
+            parent,
+            "5) Export eBay CSV",
+            "Generates ebay_ready.csv and failed.csv using CLZ export + hosted URLs.",
+        )
 
         row = ttk.Frame(card)
         row.pack(anchor="w", pady=(10, 0))
@@ -521,31 +560,31 @@ class BCXMainWindow:
 
         self._log("Starting eBay CSV export...")
 
-        # ---- signature-safe call (supports both workflow variants) ----
         try:
             sig = inspect.signature(run_ebay_csv_workflow)
             params = sig.parameters
 
-            kwargs = {
-                "clz_csv_path": self.clz_csv_path,
-                "ebay_template_csv_path": self.template_csv_path,
-                "output_dir": self.output_dir,
-            }
+            kwargs = dict(
+                clz_csv_path=self.clz_csv_path,
+                ebay_template_csv_path=self.template_csv_path,
+                output_dir=self.output_dir,
+            )
 
+            # pass min_start_price only if workflow supports it
+            if "min_start_price" in params:
+                kwargs["min_start_price"] = min_price
+
+            # support either signature style
             if "hosted_image_urls" in params:
                 kwargs["hosted_image_urls"] = self.hosted_image_urls
             elif "hosted_image_urls_by_image_id" in params:
+                kwargs["image_paths"] = []  # workflow B ignores local images
                 kwargs["hosted_image_urls_by_image_id"] = {"HOSTED": self.hosted_image_urls}
-                if "image_paths" in params:
-                    kwargs["image_paths"] = []
             else:
                 raise TypeError(
-                    "run_ebay_csv_workflow() signature not recognized. "
-                    "Expected hosted_image_urls or hosted_image_urls_by_image_id."
+                    "run_ebay_csv_workflow has an unexpected signature; "
+                    "expected hosted_image_urls or hosted_image_urls_by_image_id."
                 )
-
-            if "min_start_price" in params:
-                kwargs["min_start_price"] = min_price
 
             result = run_ebay_csv_workflow(**kwargs)
 

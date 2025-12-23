@@ -7,8 +7,22 @@ import re
 import uuid
 
 
+# ============================================================
+# Data model (authoritative)
+# ============================================================
+
 @dataclass
 class ComicRecord:
+    """
+    Canonical comic record used across BOTH workflows.
+
+    Strict matching keys:
+      - series_norm
+      - volume (int)
+      - issue_number (int)
+
+    issue_suffix is preserved for reference/debugging but NOT used for matching.
+    """
     id: int
     series_raw: str
     series_norm: str
@@ -18,15 +32,16 @@ class ComicRecord:
     raw_title: str = ""
     clz_row: Optional[List[str]] = None
 
-    # CLZ-derived fields used by Workflow B (eBay)
+    # --- CLZ metadata (optional, used for eBay mapping) ---
     publisher: str = ""
     release_year: str = ""
+    publication_year: str = ""
     grade: str = ""
-    characters: str = ""
-    cover_artist: str = ""
-    value: str = ""      # <-- CLZ column I "Value"
     era: str = ""
     universe: str = ""
+    cover_artist: str = ""
+    characters: str = ""
+    value: str = ""
 
     # Workflow A (local image pipeline)
     status: str = "PENDING"  # PENDING | MATCHED | FAILED
@@ -39,6 +54,7 @@ class ComicRecord:
     title_suffix: str = ""
 
     def with_image(self, *, image_url: str, title_suffix: str = "") -> "ComicRecord":
+        """Return a COPY marked MATCHED with a hosted image URL."""
         return replace(
             self,
             status="MATCHED",
@@ -47,6 +63,7 @@ class ComicRecord:
         )
 
     def with_failure(self, *, reason: str, unused_urls: str = "") -> "ComicRecord":
+        """Return a COPY marked FAILED with failure metadata."""
         return replace(
             self,
             status="FAILED",
@@ -55,14 +72,29 @@ class ComicRecord:
         )
 
     def to_ebay_row(self) -> Dict[int, str]:
-        sku_base = re.sub(r"[^a-z0-9]+", "_", (self.series_norm or "").lower()).strip("_")
-        sku = f"{sku_base}_v{self.volume}_{self.issue_number}{(self.issue_suffix or '').upper()}"
+        """
+        Map this comic into eBay template column indices.
 
+        NOTE:
+          - core/ebay_writer.py applies template-derived fixed values afterward.
+          - PicURL is handled in core/ebay_writer.py and always ends with a trailing '|'.
+          - CustomLabel issue number is padded to 4 digits: 0001..9999
+        """
+        # CustomLabel (SKU) — stable and deterministic
+        sku_base = re.sub(r"[^a-z0-9]+", "_", (self.series_norm or "").lower()).strip("_")
+
+        # 4-digit numeric portion ONLY here
+        issue_padded = f"{int(self.issue_number):04d}"
+        issue_part = f"{issue_padded}{(self.issue_suffix or '').upper()}"
+
+        sku = f"{sku_base}_v{self.volume}_{issue_part}"
+
+        # Title (fallback only; ebay_writer overrides *Title)
         suffix = (self.title_suffix or "").strip()
         if not suffix and self.issue_suffix:
             suffix = f"Cvr {self.issue_suffix.upper()}"
 
-        title = f"{self.series_raw}, Vol. {self.volume} #{self.issue_number}".strip()
+        title = f"{self.series_raw} Vol. {self.volume} #{self.issue_number}".strip()
         if suffix:
             title = f"{title} {suffix}".strip()
 
@@ -72,15 +104,15 @@ class ComicRecord:
             title = title[:80].rstrip()
 
         out: Dict[int, str] = {
-            1: sku,                      # CustomLabel
-            4: title,                    # *Title (writer overrides with your format)
-            10: self.series_raw or "",   # C:Series Title
-            43: str(self.issue_number),  # C:Issue Number
-            57: "1",                     # *Quantity
+            1: sku,                       # CustomLabel
+            4: title,                     # *Title (will be overridden by ebay_writer)
+            10: self.series_raw or "",    # C:Series Title
+            43: str(self.issue_number),   # C:Issue Number
+            57: "1",                      # *Quantity
         }
 
         if self.raw_title:
-            out[33] = self.raw_title     # C:Story Title
+            out[33] = self.raw_title      # C:Story Title
 
         return out
 
@@ -90,10 +122,12 @@ class ImageAsset:
     id: str
     filename: str
     path: str
+
     series_norm: str
     volume: int
     issue_number: int
     issue_suffix: str = ""
+
     used: bool = False
 
 
@@ -106,6 +140,10 @@ class AllocationResult:
     images: List[ImageAsset]
 
 
+# ============================================================
+# Normalization + parsing helpers (canonical)
+# ============================================================
+
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9\s]+", flags=re.IGNORECASE)
 _MULTI_SPACE_RE = re.compile(r"\s+")
 _VOL_TOKEN_RE = re.compile(r"^v(\d+)$", flags=re.IGNORECASE)
@@ -114,8 +152,12 @@ _ISSUE_RE = re.compile(r"^(\d+)([a-zA-Z]*)$")
 
 
 def normalize_series(text: str) -> str:
+    """
+    Normalize series names into a stable strict-match key.
+    """
     if not text:
         return ""
+
     s = text.lower()
     s = s.replace("_", " ").replace("-", " ")
     s = _NON_ALNUM_RE.sub("", s)
@@ -131,6 +173,17 @@ def parse_issue_token(issue_token: str) -> Optional[Tuple[int, str]]:
 
 
 def parse_image_filename(file_path: str) -> Optional[Tuple[str, int, int, str]]:
+    """
+    Canonical filename parser used by BOTH workflows.
+
+    Supports:
+      - Series_V1_233A.png
+      - Series_2016_12C.webp (year token)
+      - Series_233A.png (no volume token; defaults to V1)
+
+    Returns:
+      (series_norm, volume, issue_number, issue_suffix)
+    """
     name = Path(file_path).stem
     if not name:
         return None
@@ -162,6 +215,7 @@ def parse_image_filename(file_path: str) -> Optional[Tuple[str, int, int, str]]:
     else:
         series_tokens = parts[:-1]
 
+    # Drop year tokens from the series key.
     series_tokens = [t for t in series_tokens if not _YEAR_TOKEN_RE.match(t)]
     if not series_tokens:
         return None
@@ -194,7 +248,13 @@ def index_images(image_paths: Iterable[str]) -> List[ImageAsset]:
     return assets
 
 
-def allocate_images(comics: List[ComicRecord], images: List[ImageAsset]) -> AllocationResult:
+def allocate_images(
+    comics: List[ComicRecord],
+    images: List[ImageAsset],
+) -> AllocationResult:
+    """
+    Workflow A allocator (local images). Workflow B does NOT use this.
+    """
     buckets: Dict[Tuple[str, int, int], List[ImageAsset]] = {}
     for img in images:
         key = (img.series_norm, img.volume, img.issue_number)
@@ -239,19 +299,3 @@ def allocate_images(comics: List[ComicRecord], images: List[ImageAsset]) -> Allo
         ledger_comic_to_images=ledger_comic_to_images,
         images=images,
     )
-
-
-def build_comic_records(rows: List[Tuple[int, str, int, int, str]]) -> List[ComicRecord]:
-    comics: List[ComicRecord] = []
-    for (rid, series_raw, volume, issue_number, raw_title) in rows:
-        comics.append(
-            ComicRecord(
-                id=int(rid),
-                series_raw=series_raw or "",
-                series_norm=normalize_series(series_raw or ""),
-                volume=int(volume) if volume else 1,
-                issue_number=int(issue_number),
-                raw_title=raw_title or "",
-            )
-        )
-    return comics
