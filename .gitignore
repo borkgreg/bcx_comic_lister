@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtualenv
+.venv/
+venv/
+
+# PyInstaller outputs
+build/
+dist/
+*.spec.bak
+*.toc
+*.pyz
+*.pkg
+
+# Logs / runtime outputs (if any)
+*.log
