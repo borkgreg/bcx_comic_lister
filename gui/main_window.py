@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 import subprocess
 import threading
@@ -30,7 +32,8 @@ class BCXMainWindow:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("BCX Comic Lister")
-        self.root.geometry("1180x720")
+        self.root.geometry("1180x740")
+        self.root.minsize(1080, 680)
 
         self.clz_csv_path = ""
         self.output_dir = ""
@@ -43,12 +46,56 @@ class BCXMainWindow:
         self._scraper_proc: subprocess.Popen | None = None
         self._pipeline_total = 0
 
+        self.status_var = tk.StringVar(value="Ready.")
+        self._apply_style()
+
         self._build_ui()
         self._log_startup_env()
         self._refresh_staging_stats()
 
     def run(self):
         self.root.mainloop()
+
+    # ==========================================================
+    # LOOK & FEEL
+    # ==========================================================
+
+    def _apply_style(self):
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        # Slightly better scaling on retina / mac
+        try:
+            self.root.tk.call("tk", "scaling", 1.15)
+        except Exception:
+            pass
+
+        # Base typography
+        self.FONT_H1 = ("Helvetica", 18, "bold")
+        self.FONT_H2 = ("Helvetica", 13, "bold")
+        self.FONT_BODY = ("Helvetica", 12)
+        self.FONT_MUTED = ("Helvetica", 11)
+
+        # Core widget styling (ttk is limited on macOS, but this still helps)
+        style.configure("TFrame", padding=0)
+        style.configure("Card.TFrame", padding=14)
+        style.configure("TLabel", font=self.FONT_BODY)
+        style.configure("Muted.TLabel", font=self.FONT_MUTED, foreground="#666666")
+        style.configure("H2.TLabel", font=self.FONT_H2)
+        style.configure("H1.TLabel", font=self.FONT_H1)
+
+        style.configure("TButton", padding=(12, 8))
+        style.configure("Primary.TButton", padding=(14, 10))
+        style.map(
+            "Primary.TButton",
+            relief=[("pressed", "sunken"), ("!pressed", "raised")],
+        )
+
+        style.configure("Small.TButton", padding=(10, 6))
+        style.configure("TEntry", padding=(8, 6))
 
     # ==========================================================
     # UI LAYOUT
@@ -79,6 +126,9 @@ class BCXMainWindow:
 
         self._bind_mousewheel(left, self._left_canvas)
 
+        # ---- Header (left) ----
+        self._section_header(self.flow)
+
         # Sections
         self._section_inputs(self.flow)
         self._section_scraper(self.flow)
@@ -88,13 +138,47 @@ class BCXMainWindow:
 
         # ---- Right log + controls ----
         header_row = ttk.Frame(right)
-        header_row.pack(fill="x", padx=10, pady=(10, 4))
+        header_row.pack(fill="x", padx=12, pady=(12, 6))
 
-        ttk.Label(header_row, text="Log", font=("Helvetica", 14, "bold")).pack(side="left")
-        ttk.Button(header_row, text="Clear Log", command=self._clear_log).pack(side="right")
+        ttk.Label(header_row, text="Activity Log", style="H2.TLabel").pack(side="left")
+        ttk.Button(header_row, text="Copy", style="Small.TButton", command=self._copy_log).pack(side="right")
+        ttk.Button(header_row, text="Clear", style="Small.TButton", command=self._clear_log).pack(side="right", padx=(0, 8))
 
         self.log_text = tk.Text(right, height=20, wrap="word", state="disabled")
-        self.log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.log_text.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        # ---- Status bar ----
+        status = ttk.Frame(self.root)
+        status.pack(fill="x", side="bottom")
+        ttk.Separator(status, orient="horizontal").pack(fill="x")
+        ttk.Label(status, textvariable=self.status_var, style="Muted.TLabel").pack(anchor="w", padx=12, pady=6)
+
+    def _section_header(self, parent):
+        wrap = ttk.Frame(parent, padding=(16, 14))
+        wrap.pack(fill="x", padx=12, pady=(12, 6))
+
+        ttk.Label(wrap, text="BCX Comic Lister", style="H1.TLabel").pack(anchor="w")
+        ttk.Label(
+            wrap,
+            text="Download → Stage → Enhance → Export eBay CSV (fast + repeatable).",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(6, 0))
+
+        btns = ttk.Frame(wrap)
+        btns.pack(anchor="w", pady=(12, 0))
+
+        ttk.Button(btns, text="📁 Open Staging", style="Small.TButton", command=lambda: self._reveal_path(STAGING_ROOT)).pack(side="left")
+        ttk.Button(btns, text="📁 Open Processed", style="Small.TButton", command=lambda: self._reveal_path(PROCESSED_ROOT)).pack(side="left", padx=8)
+        ttk.Button(btns, text="🧾 Open Output Folder", style="Small.TButton", command=self._open_output_folder).pack(side="left")
+
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", padx=12, pady=(6, 6))
+
+    def _open_output_folder(self):
+        if self.output_dir:
+            self._reveal_path(Path(self.output_dir))
+        else:
+            messagebox.showinfo("No Output Folder", "Choose an output folder first in Inputs.")
+            self._set_status("Pick an output folder first.")
 
     def _on_flow_configure(self, _e):
         try:
@@ -130,37 +214,50 @@ class BCXMainWindow:
         widget.bind_all("<Button-5>", _on_linux_scroll_down)
 
     def _card(self, parent, title: str, subtitle: str | None = None):
-        frame = ttk.Frame(parent, padding=12)
+        frame = ttk.Frame(parent, style="Card.TFrame")
         frame.pack(fill="x", padx=12, pady=10)
-        ttk.Label(frame, text=title, font=("Helvetica", 14, "bold")).pack(anchor="w")
+
+        top = ttk.Frame(frame)
+        top.pack(fill="x")
+
+        ttk.Label(top, text=title, style="H2.TLabel").pack(anchor="w")
         if subtitle:
-            ttk.Label(frame, text=subtitle, foreground="#666666", justify="left").pack(anchor="w", pady=(4, 0))
+            ttk.Label(frame, text=subtitle, style="Muted.TLabel", justify="left").pack(anchor="w", pady=(6, 0))
         return frame
+
+    def _set_status(self, msg: str):
+        self.status_var.set(msg)
+
+    def _reveal_path(self, path: Path):
+        try:
+            p = str(path)
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", p])
+            elif sys.platform.startswith("win"):
+                subprocess.Popen(["explorer", p])
+            else:
+                subprocess.Popen(["xdg-open", p])
+            self._set_status(f"Opened: {p}")
+        except Exception as e:
+            messagebox.showerror("Open Folder Error", str(e))
 
     # ==========================================================
     # 1) INPUTS
     # ==========================================================
 
     def _section_inputs(self, parent):
-        card = self._card(
-            parent,
-            "1) Inputs",
-            "Choose your CLZ export and an output folder for the generated CSV files.",
-        )
+        card = self._card(parent, "1) Inputs", "Choose your CLZ export + where to save the CSV files.")
 
         row = ttk.Frame(card)
-        row.pack(fill="x", pady=(10, 0))
+        row.pack(fill="x", pady=(12, 0))
+        row.columnconfigure(1, weight=1)
 
-        ttk.Button(row, text="Select CLZ Export CSV", command=self._select_clz_csv).grid(
-            row=0, column=0, padx=(0, 10), sticky="w"
-        )
-        self.lbl_clz = ttk.Label(row, text="Not selected")
+        ttk.Button(row, text="📄 Select CLZ Export CSV", style="Small.TButton", command=self._select_clz_csv).grid(row=0, column=0, padx=(0, 10), sticky="w")
+        self.lbl_clz = ttk.Label(row, text="Not selected", style="Muted.TLabel")
         self.lbl_clz.grid(row=0, column=1, sticky="w")
 
-        ttk.Button(row, text="Select Output Folder", command=self._select_output_dir).grid(
-            row=1, column=0, padx=(0, 10), pady=(10, 0), sticky="w"
-        )
-        self.lbl_output = ttk.Label(row, text="Not selected")
+        ttk.Button(row, text="📁 Select Output Folder", style="Small.TButton", command=self._select_output_dir).grid(row=1, column=0, padx=(0, 10), pady=(10, 0), sticky="w")
+        self.lbl_output = ttk.Label(row, text="Not selected", style="Muted.TLabel")
         self.lbl_output.grid(row=1, column=1, sticky="w", pady=(10, 0))
 
     def _select_clz_csv(self):
@@ -172,6 +269,7 @@ class BCXMainWindow:
             self.clz_csv_path = path
             self.lbl_clz.config(text=os.path.basename(path))
             self._log(f"Selected CLZ export: {path}")
+            self._set_status("CLZ export selected.")
 
     def _select_output_dir(self):
         path = filedialog.askdirectory(title="Select Output Folder")
@@ -179,6 +277,7 @@ class BCXMainWindow:
             self.output_dir = path
             self.lbl_output.config(text=path)
             self._log(f"Selected output dir: {path}")
+            self._set_status("Output folder selected.")
 
     # ==========================================================
     # 2) SCRAPER
@@ -188,19 +287,19 @@ class BCXMainWindow:
         card = self._card(
             parent,
             "2) Download covers from CLZ",
-            "Opens the CLZ WebView scraper in a separate window. Downloads go into the staging folder.",
+            "Opens the CLZ WebView scraper in a separate window. Downloads go into staging.",
         )
-        ttk.Label(card, text=f"Staging folder: {STAGING_ROOT}", foreground="#444444").pack(anchor="w", pady=(8, 0))
+        ttk.Label(card, text=f"Staging: {STAGING_ROOT}", style="Muted.TLabel").pack(anchor="w", pady=(10, 0))
 
         btn_row = ttk.Frame(card)
-        btn_row.pack(anchor="w", pady=(10, 0))
+        btn_row.pack(anchor="w", pady=(12, 0))
 
-        ttk.Button(btn_row, text="Open CLZ WebView Scraper", command=self._open_clz_scraper).pack(side="left")
-        ttk.Button(btn_row, text="Refresh staging stats", command=self._refresh_staging_stats).pack(side="left", padx=10)
-        ttk.Button(btn_row, text="Clear Staged", command=self._clear_staged).pack(side="left")
+        ttk.Button(btn_row, text="🌐 Open CLZ Scraper", style="Primary.TButton", command=self._open_clz_scraper).pack(side="left")
+        ttk.Button(btn_row, text="↻ Refresh Stats", style="Small.TButton", command=self._refresh_staging_stats).pack(side="left", padx=10)
+        ttk.Button(btn_row, text="🧹 Clear Staged", style="Small.TButton", command=self._clear_staged).pack(side="left")
 
-        self.lbl_staging_stats = ttk.Label(card, text="(loading...)")
-        self.lbl_staging_stats.pack(anchor="w", pady=(8, 0))
+        self.lbl_staging_stats = ttk.Label(card, text="(loading...)", style="Muted.TLabel")
+        self.lbl_staging_stats.pack(anchor="w", pady=(10, 0))
 
     def _open_clz_scraper(self):
         try:
@@ -214,8 +313,7 @@ class BCXMainWindow:
                 cwd = str(project_root)
 
             self._log(f"Launching scraper: {' '.join(cmd)}")
-            if cwd:
-                self._log(f"Scraper cwd: {cwd}")
+            self._set_status("Launching CLZ scraper…")
 
             proc = subprocess.Popen(
                 cmd,
@@ -226,26 +324,18 @@ class BCXMainWindow:
                 bufsize=1,
             )
             self._scraper_proc = proc
+
             self._log("Launched CLZ WebView Scraper.")
-
             if proc.stdout:
-                threading.Thread(
-                    target=self._stream_pipe_to_log,
-                    args=(proc.stdout, "[SCRAPER] "),
-                    daemon=True,
-                ).start()
-
+                threading.Thread(target=self._stream_pipe_to_log, args=(proc.stdout, "[SCRAPER] "), daemon=True).start()
             if proc.stderr:
-                threading.Thread(
-                    target=self._stream_pipe_to_log,
-                    args=(proc.stderr, "[SCRAPER:ERR] "),
-                    daemon=True,
-                ).start()
+                threading.Thread(target=self._stream_pipe_to_log, args=(proc.stderr, "[SCRAPER:ERR] "), daemon=True).start()
 
             threading.Thread(target=self._watch_process_exit, args=(proc,), daemon=True).start()
 
         except Exception as e:
             self._log(f"ERROR launching CLZ Scraper: {e}")
+            self._set_status("Error launching scraper.")
             messagebox.showerror("Launch Error", str(e))
 
     def _stream_pipe_to_log(self, pipe, prefix: str):
@@ -264,7 +354,8 @@ class BCXMainWindow:
         try:
             code = proc.wait()
             self._log_threadsafe(f"[SCRAPER] process exited with code {code}")
-            self._log_threadsafe("Tip: click “Refresh staging stats” after downloads.")
+            self._log_threadsafe("Tip: click “Refresh Stats” after downloads.")
+            self.root.after(0, lambda: self._set_status("Scraper closed. Refresh stats when ready."))
         except Exception as e:
             self._log_threadsafe(f"[SCRAPER] process wait error: {e}")
 
@@ -278,11 +369,7 @@ class BCXMainWindow:
     def _gather_staging_images(self) -> list[str]:
         if not STAGING_ROOT.exists():
             return []
-        return [
-            str(p)
-            for p in STAGING_ROOT.rglob("*")
-            if p.is_file() and p.suffix.lower() in VALID_EXTS
-        ]
+        return [str(p) for p in STAGING_ROOT.rglob("*") if p.is_file() and p.suffix.lower() in VALID_EXTS]
 
     def _refresh_staging_stats(self):
         img_count = 0
@@ -303,14 +390,16 @@ class BCXMainWindow:
             series_count = len(series_folders)
 
             if series_count > 0:
-                self.lbl_staging_stats.config(
-                    text=f"Staged images: {img_count}   •   Series folders: {series_count}"
-                )
+                txt = f"Staged images: {img_count}   •   Series folders: {series_count}"
             else:
-                self.lbl_staging_stats.config(text=f"Staged images: {img_count}")
+                txt = f"Staged images: {img_count}"
+
+            self.lbl_staging_stats.config(text=txt)
+            self._set_status("Staging stats refreshed.")
 
         except Exception as e:
             self.lbl_staging_stats.config(text=f"Error reading staging folder: {e}")
+            self._set_status("Error refreshing staging stats.")
 
     def _clear_staged(self):
         if not STAGING_ROOT.exists():
@@ -352,6 +441,7 @@ class BCXMainWindow:
 
         self._log(f"Clear Staged: deleted={deleted} errors={errors}")
         self._refresh_staging_stats()
+        self._set_status("Staged images cleared.")
         messagebox.showinfo("Clear Staged", f"Deleted: {deleted}\nErrors: {errors}")
 
     # ==========================================================
@@ -361,20 +451,20 @@ class BCXMainWindow:
     def _section_pipeline(self, parent):
         card = self._card(
             parent,
-            "3) Upscale / enhance staged images",
-            "Processes ALL images inside the staging folder (including subfolders) and writes enhanced images into the processed folder.",
+            "3) Enhance staged images",
+            "Processes ALL images in staging (including subfolders) and writes enhanced images into processed.",
         )
-        ttk.Label(card, text=f"Processed folder: {PROCESSED_ROOT}", foreground="#444444").pack(anchor="w", pady=(8, 0))
+        ttk.Label(card, text=f"Processed: {PROCESSED_ROOT}", style="Muted.TLabel").pack(anchor="w", pady=(10, 0))
 
         btn_row = ttk.Frame(card)
-        btn_row.pack(anchor="w", pady=(10, 0))
-        ttk.Button(btn_row, text="Process staged images", command=self._run_pipeline).pack(side="left")
+        btn_row.pack(anchor="w", pady=(12, 0))
+        ttk.Button(btn_row, text="✨ Process Staged Images", style="Primary.TButton", command=self._run_pipeline).pack(side="left")
 
-        self.pipeline_status = ttk.Label(card, text="Idle")
-        self.pipeline_status.pack(anchor="w", pady=(10, 0))
+        self.pipeline_status = ttk.Label(card, text="Idle", style="Muted.TLabel")
+        self.pipeline_status.pack(anchor="w", pady=(12, 0))
 
-        self.pipeline_progress = ttk.Progressbar(card, orient="horizontal", mode="determinate", length=420)
-        self.pipeline_progress.pack(anchor="w", pady=(4, 0))
+        self.pipeline_progress = ttk.Progressbar(card, orient="horizontal", mode="determinate", length=520)
+        self.pipeline_progress.pack(anchor="w", pady=(6, 0))
 
     def _run_pipeline(self):
         paths = self._gather_staging_images()
@@ -386,6 +476,7 @@ class BCXMainWindow:
         self.pipeline_progress["value"] = 0
         self.pipeline_status.config(text=f"0/{self._pipeline_total} Starting…")
         self._log(f"Starting image pipeline on {self._pipeline_total} images.")
+        self._set_status("Processing staged images…")
 
         threading.Thread(target=self._pipeline_thread, args=(paths,), daemon=True).start()
 
@@ -428,11 +519,13 @@ class BCXMainWindow:
             for d in result.output_dirs:
                 self._log(f"  - {d}")
         self._refresh_staging_stats()
+        self._set_status("Pipeline complete.")
         messagebox.showinfo("Pipeline Complete", "Staging images processed successfully.")
 
     def _on_pipeline_error(self, error: Exception):
         self.pipeline_status.config(text="Error")
         self._log(f"PIPELINE ERROR: {error}")
+        self._set_status("Pipeline error.")
         messagebox.showerror("Pipeline Error", str(error))
 
     # ==========================================================
@@ -443,20 +536,20 @@ class BCXMainWindow:
         card = self._card(
             parent,
             "4) Hosted image URLs",
-            "Paste hosted image URLs below (one per line). Filenames must follow BCX rules.",
+            "Paste hosted image URLs (one per line). Filenames must follow BCX rules.",
         )
 
         self.urls_text = tk.Text(card, height=10, wrap="none")
-        self.urls_text.pack(fill="x", expand=False, pady=(10, 0))
+        self.urls_text.pack(fill="x", expand=False, pady=(12, 0))
 
         btn_row = ttk.Frame(card)
-        btn_row.pack(anchor="w", pady=(10, 0))
+        btn_row.pack(anchor="w", pady=(12, 0))
 
-        ttk.Button(btn_row, text="Validate URLs", command=self._process_hosted_urls).pack(side="left")
-        ttk.Button(btn_row, text="Clear URLs", command=self._clear_urls).pack(side="left", padx=10)
+        ttk.Button(btn_row, text="🔍 Validate URLs", style="Small.TButton", command=self._process_hosted_urls).pack(side="left")
+        ttk.Button(btn_row, text="🧽 Clear URLs", style="Small.TButton", command=self._clear_urls).pack(side="left", padx=10)
 
-        self.lbl_url_status = ttk.Label(card, text="Not processed")
-        self.lbl_url_status.pack(anchor="w", pady=(8, 0))
+        self.lbl_url_status = ttk.Label(card, text="Not processed", style="Muted.TLabel")
+        self.lbl_url_status.pack(anchor="w", pady=(10, 0))
 
     def _clear_urls(self):
         try:
@@ -464,9 +557,9 @@ class BCXMainWindow:
         except Exception:
             pass
         self.hosted_image_urls = []
-        if hasattr(self, "lbl_url_status") and self.lbl_url_status:
-            self.lbl_url_status.config(text="Cleared.")
+        self.lbl_url_status.config(text="Cleared.")
         self._log("Hosted URLs cleared.")
+        self._set_status("Hosted URLs cleared.")
 
     def _process_hosted_urls(self):
         from core.image_allocator import parse_image_filename
@@ -475,6 +568,7 @@ class BCXMainWindow:
         if not raw:
             self.hosted_image_urls = []
             self.lbl_url_status.config(text="No URLs pasted.")
+            self._set_status("No URLs pasted.")
             return
 
         accepted = rejected = deduped = 0
@@ -508,8 +602,10 @@ class BCXMainWindow:
             accepted += 1
 
         self.hosted_image_urls = urls
-        self.lbl_url_status.config(text=f"Accepted {accepted} • Rejected {rejected} • Duplicates ignored {deduped}")
-        self._log(self.lbl_url_status.cget("text"))
+        msg = f"Accepted {accepted} • Rejected {rejected} • Duplicates ignored {deduped}"
+        self.lbl_url_status.config(text=msg)
+        self._log(msg)
+        self._set_status("Hosted URLs validated.")
 
     # ==========================================================
     # 5) EXPORT
@@ -519,18 +615,18 @@ class BCXMainWindow:
         card = self._card(
             parent,
             "5) Export eBay CSV",
-            "Generates ebay_ready.csv and failed.csv using CLZ export + hosted URLs.",
+            "Generates ebay_ready.csv + failed.csv using CLZ export + hosted URLs.",
         )
 
         row = ttk.Frame(card)
-        row.pack(anchor="w", pady=(10, 0))
+        row.pack(anchor="w", pady=(12, 0))
 
-        ttk.Label(row, text="Minimum Start Price:").pack(side="left")
+        ttk.Label(row, text="Minimum Start Price:", style="Muted.TLabel").pack(side="left")
         self.min_price_var = tk.StringVar(value="3.00")
-        ttk.Entry(row, width=10, textvariable=self.min_price_var).pack(side="left", padx=8)
-        ttk.Label(row, text="(blanks + values below this will be raised)").pack(side="left")
+        ttk.Entry(row, width=10, textvariable=self.min_price_var).pack(side="left", padx=10)
+        ttk.Label(row, text="(blanks + values below this will be raised)", style="Muted.TLabel").pack(side="left")
 
-        ttk.Button(card, text="Run eBay CSV Export", command=self._run_workflow).pack(anchor="w", pady=(12, 0))
+        ttk.Button(card, text="🚀 Run eBay CSV Export", style="Primary.TButton", command=self._run_workflow).pack(anchor="w", pady=(14, 0))
 
     def _parse_min_price(self):
         s = (self.min_price_var.get() or "").strip()
@@ -558,7 +654,8 @@ class BCXMainWindow:
             messagebox.showerror("Invalid Minimum Price", "Enter a number like 3.00 (or leave blank).")
             return
 
-        self._log("Starting eBay CSV export...")
+        self._log("Starting eBay CSV export…")
+        self._set_status("Exporting eBay CSV…")
 
         try:
             sig = inspect.signature(run_ebay_csv_workflow)
@@ -570,15 +667,13 @@ class BCXMainWindow:
                 output_dir=self.output_dir,
             )
 
-            # pass min_start_price only if workflow supports it
             if "min_start_price" in params:
                 kwargs["min_start_price"] = min_price
 
-            # support either signature style
             if "hosted_image_urls" in params:
                 kwargs["hosted_image_urls"] = self.hosted_image_urls
             elif "hosted_image_urls_by_image_id" in params:
-                kwargs["image_paths"] = []  # workflow B ignores local images
+                kwargs["image_paths"] = []
                 kwargs["hosted_image_urls_by_image_id"] = {"HOSTED": self.hosted_image_urls}
             else:
                 raise TypeError(
@@ -590,6 +685,7 @@ class BCXMainWindow:
 
         except Exception as e:
             self._log(f"ERROR: {e}")
+            self._set_status("Export error.")
             messagebox.showerror("Workflow Error", str(e))
             return
 
@@ -599,11 +695,23 @@ class BCXMainWindow:
                 if k in result:
                     self._log(f"{k}: {result[k]}")
 
+        self._set_status("Export complete.")
         messagebox.showinfo("Done", "eBay CSVs generated successfully.")
 
     # ==========================================================
     # LOGGING
     # ==========================================================
+
+    def _copy_log(self):
+        if not self.log_text:
+            return
+        try:
+            data = self.log_text.get("1.0", "end")
+            self.root.clipboard_clear()
+            self.root.clipboard_append(data)
+            self._set_status("Log copied to clipboard.")
+        except Exception:
+            pass
 
     def _clear_log(self):
         if not self.log_text:
@@ -611,6 +719,7 @@ class BCXMainWindow:
         self.log_text.configure(state="normal")
         self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
+        self._set_status("Log cleared.")
 
     def _log(self, msg: str):
         if not self.log_text:
@@ -632,3 +741,4 @@ class BCXMainWindow:
             pass
         self._log(f"Staging root: {STAGING_ROOT}")
         self._log(f"Processed root: {PROCESSED_ROOT}")
+        self._set_status("Ready.")
